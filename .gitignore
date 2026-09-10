@@ -1,0 +1,22 @@
+# 빌드 결과물
+Debug/
+Release/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# IDE 설정
+.settings/
+.metadata/
+*.launch
+RemoteSystemsTempFiles/
+
+# CubeMX
+*.ioc.bak
+
+# 사진 (용량 큼 - 선택)
+# photos/
