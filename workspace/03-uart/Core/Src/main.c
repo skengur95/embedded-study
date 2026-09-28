@@ -56,6 +56,17 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+void uart_putc(char c) {
+	while (!(USART2->SR & (1 << 7)));
+	USART2->DR = c;
+}
+
+void uart_puts(const char *s) {
+	while (*s) {
+		uart_putc(*s);
+		s++;
+	}
+}
 
 /* USER CODE END 0 */
 
@@ -90,7 +101,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  uart_puts("\033[2J\033[H");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -102,8 +113,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  uint8_t now = (GPIOC->IDR >> 13) & 1;
 	  if (prev == 1 && now == 0) {
-		  const char *msg = "pressed\r\n";
-		  HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+		  uart_puts("pressed\r\n");
 		  GPIOA->ODR ^= (1 << 5);
 	  }
 	  prev = now;
