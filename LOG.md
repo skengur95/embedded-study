@@ -1,0 +1,356 @@
+# 임베디드 / 온디바이스 AI 독학 로그
+
+> HYUNDAI AI Insight Campus 온디바이스 AI 과정(2026.08.24 ~ 2027.04.05)과 병행하는 개인 학습 기록. 수업이 못 주는 **MCU 베어메탈 감각**을 채우는 것이 목적.
+
+---
+
+## 최종 목표
+
+- **주무기**: 임베디드 C / 제어
+- **얹을 것**: AI 모델 경량화 · 온디바이스 배포
+- **결과물**: MCU에서 진동 데이터로 이상을 감지하는 시스템 (예지보전)
+- **타겟**: 현대무벡스(물류자동화 R&D, 제어개발) · 현대엘리베이터(IoT·예지보전)
+
+## 공고 검색 키워드
+
+임베디드 SW 개발자 / 펌웨어 개발자 / 제어 SW 개발자 / Edge AI 엔지니어 / AI 모델 경량화 · 최적화 / 비전 AI / 로보틱스 SW
+
+---
+
+## 전체 로드맵
+
+| 월   | 목표                                                              | 상태           |
+|------|-------------------------------------------------------------------|----------------|
+| 9월  | 베어메탈 — LED, 버튼, UART (레지스터 직접 제어)                   | 4주차까지 완료 |
+| 10월 | 인터럽트 + 타이머, I2C로 IMU 100Hz 수집, 스텝모터                 |                |
+| 11월 | FreeRTOS, 로직 애널라이저로 지터 측정                             |                |
+| 12월 | 미니 엘리베이터 제작, 정상/이상 진동 데이터 수집, FFT + 모델 학습 |                |
+| 1월  | **TFLite Micro로 MCU에 모델 탑재** (핵심)                         |                |
+| 2월  | 양자화·최적화, Jetson과 비교                                      |                |
+| 3월  | 문서화, 포트폴리오 정리                                           |                |
+
+**시간 배분**: 평일 저녁 40분 + 주말 3시간 = 주 7시간
+
+---
+
+## 개발 환경
+
+| 항목         | 버전 / 비고                                                        |
+|--------------|--------------------------------------------------------------------|
+| 보드         | STM32 Nucleo-F411RE (Cortex-M4, Flash 512KB, RAM 128KB)            |
+| MCU          | STM32F411RETx                                                      |
+| IDE          | STM32CubeIDE 2.2.0                                                 |
+| 코드 생성    | **STM32CubeMX 6.18.1 (별도 설치 필수)**                            |
+| 펌웨어 팩    | STM32Cube FW_F4 V1.28.3                                            |
+| 워크스페이스 | `E:\embedded-study\workspace`                                      |
+| 저장소       | github.com/skengur95/embedded-study                                |
+| 기록         | 이 파일(`LOG.md`) + 사진·영상은 `media/` (파일명 `YYYY-MM-DD_내용`) |
+| C 연습       | MSYS2 (UCRT64) + vim / WSL2 Ubuntu 22.04 (설치 대기 — 재부팅 필요) |
+
+### CubeIDE 2.0부터 CubeMX가 분리됨
+
+1.x에는 `File > New > STM32 Project`가 있었으나 **2.0.0부터 CubeMX 플러그인이 제거됨.** CubeIDE 단독으로는 보드 선택·HAL 포함 프로젝트를 만들 수 없다.
+
+**프로젝트 생성 순서**
+
+1.  CubeMX 실행 → ACCESS TO BOARD SELECTOR
+2.  NUCLEO-F411RE → Start Project → "Initialize all peripherals?" **Yes**
+3.  Project Manager 탭 → 이름/경로, Toolchain을 **STM32CubeIDE**로 — **기본값이 EWARM(IAR용)으로 잡혀 있을 수 있음. 꼭 확인**
+4.  GENERATE CODE → Open Project
+
+### 보드 핀 메모
+
+- 사용자 LED = **PA5** (LD2, 초록, 칩 21번 핀)
+- 사용자 버튼 = **PC13** (B1, 칩 2번 핀) — **풀업 구조: 누르면 0, 안 누르면 1**
+- B1에는 커패시터 기반 **하드웨어 디바운스 회로**가 있음 → SW 디바운싱 불필요
+- UART(가상 시리얼) = **PA2 / PA3** (USART2), 115200 8N1 — PC에서는 **COM3** (STLink Virtual COM Port)
+- CubeMX 칩 그림에는 신호명 대신 **User Label**이 표시됨 (예: `USART2_TX` → `USART_TX`, PA5 → `LD2`). 실제 신호는 핀 클릭 또는 GPIO Settings 탭에서 확인. 라벨은 `main.h`의 `USART_TX_Pin` 같은 매크로가 됨
+
+### 문서 (ST 공식, 무료)
+
+- **RM0383** 레퍼런스 매뉴얼 — 레지스터 사전. 제일 많이 봄 `st.com/resource/en/reference_manual/rm0383-stm32f411xce-advanced-armbased-32bit-mcus-stmicroelectronics.pdf`
+- **DS10314** 데이터시트 — 전기 스펙 `st.com/resource/en/datasheet/stm32f411re.pdf`
+- 읽는 법: 처음부터 읽지 말고 Ctrl+F로 찾아 쓰기
+
+---
+
+## 레지스터 노트
+
+| 레지스터       | 하는 일                                     | 근거         |
+|----------------|---------------------------------------------|--------------|
+| `RCC->AHB1ENR` | 주변장치 클럭 공급 (비트 0=GPIOA, 1=B, 2=C) | RM0383 6.3.9 |
+| `GPIOx->MODER` | 핀 모드 (핀당 **2비트**)                    | RM0383 8.4.1 |
+| `GPIOx->ODR`   | 출력값 (핀당 1비트)                         | RM0383 8.4.6 |
+| `GPIOx->IDR`   | 입력값 (핀당 1비트, 읽기 전용)              | RM0383 8.4.5 |
+
+### MODER 계산법
+
+핀 y는 **비트 2y ~ 2y+1** 사용. 값: `00` 입력 / `01` 출력 / `10` 대체기능 / `11` 아날로그
+
+- PA5 → 비트 10~11 → 출력 → `MODER |= (1 << 10)`
+- PC13 → 비트 26~27 → 입력(`00`은 리셋 기본값이라 생략 가능)
+  - 실무에선 명시적으로: `GPIOC->MODER &= ~(3 << 26);`
+
+**2비트 필드는 지우고 쓰는 것이 정석.** `|=`만 쓰면 기존 1이 남는다.
+
+``` c
+reg &= ~(3 << (2*y));      // 기존 값 clear
+reg |=  (VALUE << (2*y));  // 새 값
+```
+
+### 비트 마스킹
+
+| 목적             | 연산             |
+|------------------|------------------|
+| 켜기             | `\|= (1 << n)`    |
+| 끄기             | `&= ~(1 << n)`   |
+| 뒤집기           | `^= (1 << n)`    |
+| 읽기(0/1 정규화) | `(reg >> n) & 1` |
+
+**`==`가 `&`보다 우선순위가 높다.** 비교할 때는 반드시 괄호로 묶을 것.
+
+``` c
+if ((GPIOC->IDR & (1 << 13)) == 0)   // 괄호 필수
+```
+
+---
+
+## 9월 진행 상황
+
+### 준비 ✅
+
+- [x] Nucleo-F411RE 수령, CubeIDE + CubeMX 설치, ST-Link 펌웨어 업데이트
+- [x] 추가 부품 주문 및 수령
+- [x] 아크릴 베이스판 조립
+- [x] 깃허브 저장소 + `.gitignore` + 커밋 자동화 배치파일
+
+### 1주차 · HAL로 LED ✅
+
+- [x] `01-led-blink` — `HAL_GPIO_TogglePin` + `HAL_Delay`
+
+### 2주차 · 레지스터 직접 제어 ✅
+
+- [x] RCC / MODER / ODR로 LED 제어
+- [x] RM0383에서 비트 위치 직접 확인
+- [x] `HAL_Delay` → 지연 루프로 교체
+
+### 3주차 · 버튼 입력 ✅
+
+- [x] `02-button` — GPIOC 클럭, IDR 읽기
+- [x] 누르고 있는 동안 점등
+- [x] 엣지 검출로 토글 구현
+
+### 4주차 · UART ✅
+
+- [x] `03-uart` — CubeMX로 생성, USART2 115200 8N1
+- [x] PuTTY 설치
+- [x] PC 터미널에 문자 출력
+- [x] 버튼 누르면 "pressed" 출력
+- [ ] (보너스) 송신을 레지스터로 직접 구현 — `USART2->SR` TXE, `USART2->DR`
+
+---
+
+## 보유 부품
+
+- STM32 Nucleo-F411RE
+- MPU-6050 (GY-521) IMU — 핀헤더 납땜 완료, 6축(가속도3+자이로3), **3V3에 연결**
+- 브레드보드 MB-102 830핀 ×2
+- 듀폰 점퍼선 20cm 3종(암암/암수/수수)
+- 아크릴 베이스판 20×12cm + 10mm 육각 서포터
+- 로직 애널라이저 8ch 24MHz — SW는 PulseView(무료)
+- 스텝모터 28BYJ-48 + ULN2003 드라이버 (5V, 감속비 1:64, 4096스텝/회전)
+
+---
+
+## 참고 자료
+
+- CSAPP 3장 · 6장 · 8장 (도서관)
+- Miro Samek, *Modern Embedded Systems Programming* (유튜브, 무료)
+- 위키독스 "ARM 프로그래밍 실무" (한글, 무료)
+- Godbolt (compiler explorer)
+
+---
+
+# 일일 기록
+
+> 형식: **뭘 했는지 / 뭐가 안 됐는지.** 안 된 쪽이 나중에 더 값나감.
+
+## 2026-09-28 (월) 익일 새벽 KST — 4주차 UART
+
+**한 일**
+
+`03-uart` 프로젝트 신규 생성 (보드 셀렉터 → USART2 기본 설정 확인: Asynchronous, 115200, 8N1, PA2 TX / PA3 RX).
+
+- PuTTY 설치, 장치 관리자에서 STLink Virtual COM Port = **COM3** 확인. Serial / 115200 세션 저장
+- 1단계: `HAL_UART_Transmit(&huart2, ...)`로 "Hello from F411" 1초 주기 송신 → 성공
+- 2단계: 3주차 엣지 검출 코드에 송신 한 줄 추가 → 버튼 누르면 "pressed" 출력 + LED 토글 → 성공
+- 시작 시 ANSI 코드 `\033[2J\033[H` 송신으로 터미널 화면 초기화
+
+``` c
+// while 안
+uint8_t now = (GPIOC->IDR >> 13) & 1;
+if (prev == 1 && now == 0) {
+    const char *msg = "pressed\r\n";
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+    GPIOA->ODR ^= (1 << 5);
+}
+prev = now;
+```
+
+**알아낸 것**
+
+- **줄바꿈은 `\r\n`** — `\n`만 보내면 커서가 왼쪽 끝으로 돌아가지 않아 출력이 계단처럼 밀림
+- **폴링 주기와 입력 누락** — while 안에 `HAL_Delay(1000)`이 있으면 버튼을 1초에 한 번만 확인 → 짧게 누르면 놓침. Hello 코드를 빼고 루프를 비워 둬야 엣지 검출이 동작
+- **`HAL_UART_Transmit`도 차단 함수** — 9글자 × 10비트 ÷ 115200 ≈ 0.8ms 동안 CPU 점유. 버튼엔 무관하지만 10월 IMU 100Hz 수집 땐 인터럽트/DMA 송신 고려
+- B1 핀 초기화를 CubeMX가 해 주므로 GPIOC 클럭 설정은 `MX_GPIO_Init()`에 이미 포함
+- PuTTY 화면 지우기: 제목 표시줄 우클릭 → Reset Terminal / Clear Scrollback
+
+**막힌 것**
+
+1.  **Toolchain 기본값이 EWARM** → IAR용 프로젝트가 생성될 뻔함. 생성 전 `STM32CubeIDE`로 변경
+2.  **칩 그림의 핀 이름이 `USART_TX`로 표시** → 설정 오류가 아니라 User Label 표시. GPIO Settings 탭에서 신호(`USART2_TX`)와 라벨이 나란히 확인됨
+
+**사진·영상**
+
+<img src="media/2026-09-28_first-uart-hello.png" width="400">
+
+PuTTY에 "Hello from F411" 1초 주기 출력 — 첫 UART 통신
+
+<img src="media/2026-09-28_cubemx-usart2.png" width="400">
+
+CubeMX USART2 설정 — 신호와 User Label
+
+<img src="media/2026-09-28_stlink-vcp.png" width="400">
+
+장치 관리자 STLink Virtual COM Port = COM3
+
+[▶ 버튼 누르면 "pressed" 출력 + LED 토글](media/2026-09-28_button-pressed.mp4)
+
+**다음**: (보너스) 레지스터로 UART 송신 직접 구현 → 10월 인터럽트 + 타이머
+
+---
+
+## 2026-09-14 (월) 02:19 KST — 3주차 버튼 입력 (조기 완료)
+
+**한 일**
+
+`02-button` 프로젝트 신규 생성. 단계별로 프로젝트를 분리해 저장소 구조화.
+
+- GPIOC 클럭 추가 (`AHB1ENR` 비트 2), `IDR`로 PC13 읽기
+- Nucleo 버튼은 **풀업 구조** — 누르면 0, 안 누르면 1
+- 1단계: 누르고 있는 동안 점등 → 성공
+- 2단계: 토글 시도 → **이상 동작 발생**
+
+**핵심 — 상태와 사건의 구분**
+
+`while`이 초당 수백만 회 돌기 때문에, 0.1초만 눌러도 수십만 번 반전됨. 홀짝에 따라 결과가 결정되는 사실상 난수.
+
+"버튼이 눌려 **있다**"(상태)가 아니라 "버튼이 **방금 눌렸다**"(사건)를 잡아야 한다. 이전 값을 기억해 1→0 전환 순간만 검출 — **엣지 검출**.
+
+``` c
+uint8_t prev = 1;                          // while 밖에 선언
+
+// while 안
+uint8_t now = (GPIOC->IDR >> 13) & 1;
+if (prev == 1 && now == 0) {
+    GPIOA->ODR ^= (1 << 5);
+}
+prev = now;
+```
+
+동작 흐름: 누른 그 **한 바퀴**에서만 토글되고, 직후 `prev = now`가 문을 닫음. 누르는 시간과 무관하게 1회만 반응.
+
+**검증 (일부러 망가뜨려 보기)**
+
+| 실험                              | 결과                                                  |
+|-----------------------------------|-------------------------------------------------------|
+| `prev = now` 제거                 | prev가 1에 고정 → 초기 상태와 동일하게 난동작         |
+| `prev`를 while 안에서 선언        | 매 반복 1로 초기화 → 위와 **원인은 다르나 증상 동일** |
+| 조건을 `prev==0 && now==1`로 반전 | 뗄 때 반응 (상승 엣지)                                |
+
+세 경우 모두 예상과 일치. 앞의 둘이 같은 증상이 되는 이유를 설명할 수 있게 됨.
+
+**채터링 관찰**
+
+빠르게 여러 번 눌러도 오동작 없음 → **Nucleo B1은 커패시터로 하드웨어 디바운스**되어 있음. 브레드보드 택트 스위치에는 이 회로가 없으므로 12월 미니 엘리베이터 버튼에서는 SW 디바운싱 필요. `HAL_Delay(30)` 방식은 CPU를 묶으므로, **10월 타이머 학습 후 비차단 방식으로 구현할 것.**
+
+**막힌 것**
+
+1.  **CMSIS-NN 헤더 누락 에러 21건** (`arm_nnfunctions.h: No such file`) → 프로젝트에 신경망 라이브러리가 딸려옴. 재생성으로 해결
+2.  **`if (A & B) == 0` 괄호 누락** → `==`가 `&`보다 우선순위가 높아 `A & ((B) == 0)`으로 해석됨. 비트 연산 비교는 항상 괄호
+
+**다음**: 4주차 UART
+
+---
+
+## 2026-09-10 (목) 23:27 KST — 저장소 구축
+
+- 깃허브 저장소 생성 및 첫 푸시 (`skengur95/embedded-study`)
+- `.gitignore`로 `Debug/`, `.settings/` 등 빌드 산출물 제외
+- `git config --global user.name/email` 설정 — 미설정 시 커밋 거부됨
+- 커밋 자동화 배치파일 작성 (add → commit → push). **배치파일은 CP949로 저장해야 함** (UTF-8이면 한글 줄이 깨져 명령이 쪼개짐)
+- 수업용 `OnDevice` 저장소와 개인 프로젝트 저장소를 **분리** 유지
+
+---
+
+## 2026-09-08 (화) — 부품 수령 및 조립
+
+- 주문 부품 전량 도착
+- 아크릴 베이스판에 Nucleo + 브레드보드 고정. **10mm 육각 서포터로 띄워** 밑면 납땜/핀 보호
+
+<img src="media/2026-09-08_parts-arrived.jpg" width="400">
+
+주문 부품 도착
+
+<img src="media/2026-09-08_assembly-done.jpg" width="400">
+
+아크릴 베이스판 조립 완료
+
+---
+
+## 2026-09-06 (일) 23:12 KST — 레지스터 직접 제어 (2주차)
+
+**한 일**
+
+``` c
+RCC->AHB1ENR |= (1 << 0);      // GPIOA 클럭 공급
+GPIOA->MODER |= (1 << 10);     // PA5 출력 모드
+GPIOA->ODR   ^= (1 << 5);      // 토글
+for (volatile int i = 0; i < 5000000; i++);
+```
+
+- RM0383 8.4.1 MODER 표에서 비트 위치를 직접 확인하고 코드와 대조
+- `MX_GPIO_Init()` 내부 → `__HAL_RCC_GPIOA_CLK_ENABLE()` → `SET_BIT(RCC->AHB1ENR, ...)`. **HAL도 결국 같은 레지스터를 건드릴 뿐**임을 확인
+
+**막힌 것 / 알아낸 것**
+
+1.  **클럭 없으면 아무 일도 안 일어남** — 클럭 설정과 `MX_GPIO_Init()`을 함께 주석 처리하니 LED 완전 무반응. 에러도 없음
+2.  **지연 루프 미동작** — 원인은 **지역 변수 미초기화**(`for (volatile int i; ...)`). 스택 잔여값이 조건보다 커서 루프가 즉시 종료. C 표준상 undefined behavior. 재현이 안 되는 유형의 버그. 전역/static은 0 초기화되지만 지역 변수는 아님. `-Wall`로 사전 검출 가능
+3.  **LED가 어둡게 켜짐** — 고장이 아니라 **PWM을 우연히 재현**한 것. 지연이 짧아 초당 수천 회 점멸 → 눈이 평균 밝기로 인식. 듀티 사이클을 바꾸면 밝기가 변함
+
+**측정**
+
+- 지연 루프 5,000,000회 ≈ 0.5초 (`HAL_Delay(500)`과 유사)
+- 역산하면 1회당 약 8사이클 (84MHz 기준). `volatile` 탓에 매 반복 메모리 read-compare-add-write 발생
+- 지연 루프는 클럭·최적화·컴파일러에 따라 시간이 달라져 실무용이 아님 → **타이머 필요**
+
+---
+
+## 2026-09-05 (토) 14:13 KST — 첫 LED 점등
+
+- 보드 수령, 개발 환경 구축, `01-led-blink`로 HAL 기반 점멸 성공
+- **CubeIDE에 STM32 프로젝트 생성 메뉴가 없어 40분 소요** → 2.0.0부터 CubeMX 분리됨을 검색으로 확인
+- 빌드 에러 4건 — 전부 오타(`GPIO`→`GPIOA`, `HAL_DELAY`→`HAL_Delay`). C는 대소문자 구분
+- 워크스페이스 경로에 한글 금지 / 코드는 `USER CODE BEGIN/END` 주석 사이에만
+
+<img src="media/2026-09-05_unboxing-01_nucleo-box.jpg" width="400">
+
+Nucleo-F411RE 박스
+
+<img src="media/2026-09-05_unboxing-02_board-antistatic.jpg" width="400">
+
+정전기 방지 봉투 속 보드
+
+<img src="media/2026-09-05_first-power-on.jpg" width="400">
+
+첫 전원 연결
