@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,7 +67,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	uint8_t prev = 1;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -100,6 +100,13 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  uint8_t now = (GPIOC->IDR >> 13) & 1;
+	  if (prev == 1 && now == 0) {
+		  const char *msg = "pressed\r\n";
+		  HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+		  GPIOA->ODR ^= (1 << 5);
+	  }
+	  prev = now;
   }
   /* USER CODE END 3 */
 }
